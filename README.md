@@ -176,28 +176,7 @@ AI-Hand-Gesture-Recognition/
 └── README.md              # This file
 ```
 
----
-
-## License
-
-This project is licensed under the MIT License.
-
----
-
 ## Acknowledgments
 
 - **MediaPipe** by Google for hand landmark detection
 - **Kaggle Fingers Dataset** for training data
-- Classical ML libraries: scikit-learn, pandas, numpy
-
----
-
-## Contributing
-
-Contributions are welcome! Please open an issue or submit a pull request.
-
----
-
-## Contact
-
-For questions or feedback, reach out at your.email@example.com
