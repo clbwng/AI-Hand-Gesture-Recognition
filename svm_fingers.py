@@ -19,7 +19,7 @@ from sklearn.metrics import (
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-CSV_PATH = "landmarks.csv"
+CSV_PATH = "landmarks_right_handed_only.csv"
 TEST_SIZE = 0.2
 
 
