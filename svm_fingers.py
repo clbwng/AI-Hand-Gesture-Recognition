@@ -5,7 +5,7 @@ from collections import Counter
 import numpy as np
 import pandas as pd
 
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split, GridSearchCV, RepeatedStratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
@@ -15,12 +15,17 @@ from sklearn.metrics import (
     confusion_matrix,
     precision_recall_fscore_support,
 )
+from sklearn.base import clone
 
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 CSV_PATH = "landmarks_right_handed_only.csv"
-TEST_SIZE = 0.2
+TEST_SIZE = 0.95
+
+# Repeated CV settings
+N_SPLITS = 5       # k in k-fold
+N_REPEATS = 10     # how many times to repeat k-fold
 
 
 # -------------------------------
@@ -88,7 +93,6 @@ def plot_linear_results(df):
     plt.grid(True)
     plt.tight_layout()
     plt.show()
-
 
 
 def plot_rbf_results(df):
@@ -161,6 +165,98 @@ def plot_poly_results(df):
 
 
 # -------------------------------
+# New: Repeated k-fold evaluation with CIs
+# -------------------------------
+def repeated_cv_evaluation(X, y, best_clf, n_splits=5, n_repeats=10, random_state=42):
+    """
+    Run RepeatedStratifiedKFold using the best_clf and compute accuracy
+    + macro-F1 for each fold. Then compute per-repeat means and 95% CIs,
+    and plot them.
+    """
+    rskf = RepeatedStratifiedKFold(
+        n_splits=n_splits,
+        n_repeats=n_repeats,
+        random_state=random_state,
+    )
+
+    acc_scores = []
+    f1_scores = []
+
+    print(f"\nRunning RepeatedStratifiedKFold: {n_splits} folds × {n_repeats} repeats "
+          f"= {n_splits * n_repeats} evaluations...")
+
+    for fold_idx, (train_idx, test_idx) in enumerate(rskf.split(X, y), start=1):
+        X_train_cv, X_test_cv = X[train_idx], X[test_idx]
+        y_train_cv, y_test_cv = y[train_idx], y[test_idx]
+
+        clf = clone(best_clf)
+        clf.fit(X_train_cv, y_train_cv)
+        y_pred_cv = clf.predict(X_test_cv)
+
+        acc = accuracy_score(y_test_cv, y_pred_cv)
+        _, _, f1, _ = precision_recall_fscore_support(
+            y_test_cv, y_pred_cv, average="macro"
+        )
+
+        acc_scores.append(acc)
+        f1_scores.append(f1)
+
+    acc_scores = np.array(acc_scores)
+    f1_scores = np.array(f1_scores)
+
+    # Reshape to [n_repeats, n_splits] so we can compute stats per repetition
+    acc_rep = acc_scores.reshape(n_repeats, n_splits)
+    f1_rep = f1_scores.reshape(n_repeats, n_splits)
+
+    # Per-repeat mean and 95% CI (over the folds within that repeat)
+    def mean_ci_per_repeat(values_rep):
+        means = values_rep.mean(axis=1)
+        stds = values_rep.std(axis=1, ddof=1)
+        ci = 1.96 * stds / np.sqrt(values_rep.shape[1])
+        return means, ci
+
+    acc_means, acc_ci = mean_ci_per_repeat(acc_rep)
+    f1_means, f1_ci = mean_ci_per_repeat(f1_rep)
+
+    # Overall mean and CI across all splits
+    def overall_mean_ci(values):
+        mean = values.mean()
+        std = values.std(ddof=1)
+        ci = 1.96 * std / np.sqrt(len(values))
+        return mean, ci
+
+    acc_mean_all, acc_ci_all = overall_mean_ci(acc_scores)
+    f1_mean_all, f1_ci_all = overall_mean_ci(f1_scores)
+
+    print("\n=== Repeated CV Summary (across all folds & repeats) ===")
+    print(f"Accuracy: mean = {acc_mean_all:.4f}, 95% CI ≈ [{acc_mean_all - acc_ci_all:.4f}, "
+          f"{acc_mean_all + acc_ci_all:.4f}]")
+    print(f"Macro F1: mean = {f1_mean_all:.4f}, 95% CI ≈ [{f1_mean_all - f1_ci_all:.4f}, "
+          f"{f1_mean_all + f1_ci_all:.4f}]")
+
+    # Plot per-repeat means with 95% CI error bars
+    reps = np.arange(1, n_repeats + 1)
+
+    plt.figure(figsize=(8, 5))
+    plt.errorbar(reps, acc_means, yerr=acc_ci, fmt="-o", capsize=5)
+    plt.xlabel("Repeat index")
+    plt.ylabel("Accuracy")
+    plt.title(f"Accuracy per repeat ({n_splits}-fold CV) with 95% CI")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure(figsize=(8, 5))
+    plt.errorbar(reps, f1_means, yerr=f1_ci, fmt="-o", capsize=5)
+    plt.xlabel("Repeat index")
+    plt.ylabel("Macro F1-score")
+    plt.title(f"Macro F1 per repeat ({n_splits}-fold CV) with 95% CI")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
+# -------------------------------
 # Train & evaluate SVM with grid search
 # -------------------------------
 def train_and_tune_svm(
@@ -174,7 +270,7 @@ def train_and_tune_svm(
     print(f"Total samples: {len(y)}")
     print("Class distribution:", Counter(y))
 
-    # Train/test split (stratified)
+    # Train/test split (stratified) for a one-shot test evaluation
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
@@ -215,7 +311,7 @@ def train_and_tune_svm(
         },
     ]
 
-    # Grid search using accuracy (as you requested)
+    # Grid search using accuracy
     grid = GridSearchCV(
         estimator=pipe,
         param_grid=param_grid,
@@ -234,7 +330,6 @@ def train_and_tune_svm(
 
     # Convert cv_results_ to DataFrame for plotting
     cv_results = pd.DataFrame(grid.cv_results_)
-    # Plot how accuracy changes with hyperparameters
     print("\nPlotting CV accuracy vs hyperparameters...")
     plot_linear_results(cv_results)
     plot_rbf_results(cv_results)
@@ -242,7 +337,7 @@ def train_and_tune_svm(
 
     best_clf = grid.best_estimator_
 
-    # Evaluate on test set
+    # Evaluate on held-out test set once
     y_test_pred = best_clf.predict(X_test)
 
     acc = accuracy_score(y_test, y_test_pred)
@@ -281,6 +376,16 @@ def train_and_tune_svm(
     plt.title("Confusion Matrix - Best SVM Model")
     plt.tight_layout()
     plt.show()
+
+    # Now: run repeated k-fold CV on the full dataset with the best model
+    repeated_cv_evaluation(
+        X,
+        y,
+        best_clf,
+        n_splits=N_SPLITS,
+        n_repeats=N_REPEATS,
+        random_state=random_state,
+    )
 
     return best_clf
 
