@@ -1,3 +1,17 @@
+# @misc{
+#         fingers-numbers_dataset,
+#         title = { Fingers Numbers Dataset },
+#         type = { Open Source Dataset },
+#         author = { Hands },
+#         howpublished = { \url{ https://universe.roboflow.com/hands-rirpj/fingers-numbers } },
+#         url = { https://universe.roboflow.com/hands-rirpj/fingers-numbers },
+#         journal = { Roboflow Universe },
+#         publisher = { Roboflow },
+#         year = { 2023 },
+#         month = { jun },
+#         note = { visited on 2025-12-10 },
+#     }
+
 import os
 import csv
 import cv2
