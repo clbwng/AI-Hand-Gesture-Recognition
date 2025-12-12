@@ -1,256 +1,228 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
-    accuracy_score, 
-    f1_score, 
-    precision_score, 
-    recall_score, 
-    confusion_matrix, 
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+    confusion_matrix,
     ConfusionMatrixDisplay
 )
-from sklearn.model_selection import train_test_split
-import matplotlib.pyplot as plt
-import hashlib
 
-
+# ===========================================================
+# CONFIG
+# ===========================================================
 CSV_PATH = "landmarks_reduced.csv"
-C_VALUES = [0.0001, 0.001, 0.1, 1.0, 10.0, 100.0, 1000.0]      # Regularization strengths
-LABELS = [0,1,2,3,4,5]           # Valid finger-count classes
-
-
-# ===========================================================
-# Helper: evaluate model using shared metrics
-# ===========================================================
-def evaluate_model(y_true, y_pred, labels=LABELS):
-    """Compute consistent evaluation metrics for LR, MLP, SVM."""
-    acc  = accuracy_score(y_true, y_pred)
-    f1   = f1_score(y_true, y_pred, average="macro")
-    prec = precision_score(y_true, y_pred, average="macro")
-    rec  = recall_score(y_true, y_pred, average="macro")
-
-    cm = confusion_matrix(y_true, y_pred, labels=labels)
-    cm_percent = cm.astype(float) / cm.sum(axis=1)[:, None] * 100
-
-    return acc, f1, prec, rec, cm_percent
-
-def run_label_permutation_test(
-    X_train, y_train, X_test, y_test, C
-):
-    """
-    Train Logistic Regression on permuted labels
-    and evaluate generalization.
-    """
-    # Shuffle training labels
-    y_train_perm = np.random.permutation(y_train)
-
-    model = LogisticRegression(
-        C=C,
-        max_iter=2000,
-        solver="lbfgs",
-        multi_class="multinomial"
-    )
-
-    model.fit(X_train, y_train_perm)
-
-    train_pred = model.predict(X_train)
-    test_pred  = model.predict(X_test)
-
-    train_acc = accuracy_score(y_train_perm, train_pred)
-    test_acc  = accuracy_score(y_test, test_pred)
-
-    return train_acc, test_acc
-
+LABELS = [0,1,2,3,4,5]
+C_VALUES = [0.0001, 0.001, 0.1, 1.0, 10.0, 100.0]
+K_FOLDS = 10
+RANDOM_SEED = 42
 
 # ===========================================================
-# STEP 1 — Load + Clean the dataset
+# Load dataset
 # ===========================================================
 df = pd.read_csv(CSV_PATH)
-
-# Keep valid classes 0–5
 df = df[df["label_fingers"].isin(LABELS)]
 
-# Landmark feature columns
-feature_cols = [c for c in df.columns if c.startswith(("x", "y", "z"))]
-
-# Duplicate detection via hashing
-def row_hash(row):
-    return hashlib.md5(str(tuple(row[feature_cols])).encode()).hexdigest()
-
-df["hash"] = df.apply(row_hash, axis=1)
-
-print("\n===== DATASET SUMMARY =====")
-print("Class counts:\n", df["label_fingers"].value_counts().sort_index())
-print("Total samples:", len(df))
-print("Unique landmark sets:", df["hash"].nunique(), "\n")
-
-
-# Extract X and y
+feature_cols = [c for c in df.columns if c.startswith(("x","y","z"))]
 X = df[feature_cols].values
 y = df["label_fingers"].values
 
+print("\n===== DATASET SUMMARY =====")
+print(df["label_fingers"].value_counts().sort_index())
 
 # ===========================================================
-# STEP 2 — Stratified Train/Test Split
+# STEP 1 — Train / Validation / Test split
+#   60% train, 20% val, 20% test
 # ===========================================================
-X_train, X_test, y_train, y_test = train_test_split(
-    X,
-    y,
+X_temp, X_test, y_temp, y_test = train_test_split(
+    X, y,
     test_size=0.20,
     stratify=y,
-    random_state=42
+    random_state=RANDOM_SEED
 )
 
-print("Train class distribution:", pd.Series(y_train).value_counts().sort_index().to_dict())
-print("Test class distribution:", pd.Series(y_test).value_counts().sort_index().to_dict(), "\n")
+X_train, X_val, y_train, y_val = train_test_split(
+    X_temp, y_temp,
+    test_size=0.25,   # 0.25 × 0.80 = 0.20
+    stratify=y_temp,
+    random_state=RANDOM_SEED
+)
 
+print("\nSplit sizes:")
+print("Train:", len(X_train))
+print("Val:  ", len(X_val))
+print("Test: ", len(X_test))
 
 # ===========================================================
-# STEP 3 — Standardize the features
+# STEP 2 — Hyperparameter sweep (TRAIN → VAL)
 # ===========================================================
 scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test  = scaler.transform(X_test)
+X_train_s = scaler.fit_transform(X_train)
+X_val_s   = scaler.transform(X_val)
 
-
-# ===========================================================
-# STEP 4 — Train and evaluate for each C
-# ===========================================================
-results = []
-train_accs = []
-test_accs  = []
+sweep_results = []
+best_C = None
+best_val_acc = -1
 
 for C in C_VALUES:
-    print(f"\n===== Training Logistic Regression (C={C}) =====")
-
     model = LogisticRegression(
         C=C,
-        max_iter=2000,
         solver="lbfgs",
-        multi_class="multinomial"
+        max_iter=2000
     )
+    model.fit(X_train_s, y_train)
 
-    model.fit(X_train, y_train)
+    y_val_pred = model.predict(X_val_s)
+    acc = accuracy_score(y_val, y_val_pred)
 
-    # Predictions
-    train_pred = model.predict(X_train)
-    test_pred  = model.predict(X_test)
+    sweep_results.append({"C": C, "val_accuracy": acc})
 
-    # Compute metrics (test set)
-    acc, f1, prec, rec, cm_percent = evaluate_model(y_test, test_pred)
+    if acc > best_val_acc:
+        best_val_acc = acc
+        best_C = C
 
-    results.append({
-        "C": C,
-        "accuracy": acc,
-        "macro_f1": f1,
-        "macro_precision": prec,
-        "macro_recall": rec
-    })
+sweep_df = pd.DataFrame(sweep_results)
 
-    # Store accuracies
-    train_accs.append(accuracy_score(y_train, train_pred))
-    test_accs.append(accuracy_score(y_test, test_pred))
-
-    # Print model metrics
-    print(f"Train Accuracy:  {train_accs[-1]:.4f}")
-    print(f"Test Accuracy:   {test_accs[-1]:.4f}")
-    print(f"Macro F1 Score:  {f1:.4f}")
-    print(f"Macro Precision:{prec:.4f}")
-    print(f"Macro Recall:   {rec:.4f}")
-
-    # Plot confusion matrix (%) 
-    disp = ConfusionMatrixDisplay(
-        confusion_matrix=np.round(cm_percent, 1),
-        display_labels=LABELS
-    )
-
-    fig, ax = plt.subplots(figsize=(6,5))
-    disp.plot(cmap="Blues", ax=ax, values_format=".1f")
-    plt.title(f"Confusion Matrix (%) — C={C}")
-    plt.show()
-
-# ===========================================================
-# Plot: Training vs Test Accuracy
-# ===========================================================
-plt.figure(figsize=(7,5))
-
-plt.plot(C_VALUES, train_accs, marker="o", label="Training Accuracy")
-plt.plot(C_VALUES, test_accs,  marker="o", label="Test Accuracy")
-
-plt.xscale("log")
-plt.ylim(0, 1)
-
-plt.xlabel("C (Inverse Regularization Strength)")
-plt.ylabel("Accuracy")
-plt.title("Logistic Regression: Training vs Test Accuracy")
-plt.legend()
-plt.grid(True, linestyle="--", alpha=0.6)
-
-plt.show()
-
-
-# ===========================================================
-# STEP 5 — Summary Table
-# ===========================================================
-results_df = pd.DataFrame(results)
-print("\n===== SUMMARY OF LOGISTIC REGRESSION RESULTS =====")
-print(results_df.to_string(index=False))
-
-
-# ===========================================================
-# STEP 6 — Line Plot for Accuracy vs C
-# ===========================================================
-plt.figure(figsize=(7,5))
-
-plt.plot(results_df["C"], results_df["accuracy"], marker="o", linewidth=2)
-
-plt.xscale("log")   # logistic regression regularization works best on log scale
-plt.ylim(0, 1)
-
-plt.xlabel("C Value (log scale)")
-plt.ylabel("Test Accuracy")
-plt.title("Logistic Regression Test Accuracy vs Regularization Strength (C)")
-plt.grid(True, linestyle="--", alpha=0.6)
-
-plt.show()
-
-# ===========================================================
-# STEP 7 — Label Permutation Test (Overfitting Check)
-# ===========================================================
-PERMUTATION_C = 10000.0
-NUM_RUNS = 5
-
-print("\n===== LABEL PERMUTATION TEST =====")
-print(f"Using C = {PERMUTATION_C}")
-print("Expected chance accuracy ≈ 16.7% (6 classes)\n")
-
-perm_train_accs = []
-perm_test_accs  = []
-
-for i in range(NUM_RUNS):
-    train_acc, test_acc = run_label_permutation_test(
-        X_train, y_train, X_test, y_test, PERMUTATION_C
-    )
-
-    perm_train_accs.append(train_acc)
-    perm_test_accs.append(test_acc)
-
-    print(f"Run {i+1}: Train Acc = {train_acc:.4f}, Test Acc = {test_acc:.4f}")
-
-print("\nPermutation Test Summary:")
-print(f"Mean Train Accuracy: {np.mean(perm_train_accs):.4f}")
-print(f"Mean Test Accuracy:  {np.mean(perm_test_accs):.4f}")
-
-plt.figure(figsize=(6,4))
-plt.bar(
-    ["Permuted Train", "Permuted Test"],
-    [np.mean(perm_train_accs), np.mean(perm_test_accs)],
-    color=["#f44336", "#2196f3"]
+# ---------------- Heatmap ----------------
+plt.figure(figsize=(8,4))
+sns.heatmap(
+    sweep_df[["val_accuracy"]].T,
+    annot=True,
+    fmt=".3f",
+    cmap="viridis",
+    xticklabels=[f"{c:.1e}" for c in sweep_df["C"]]
 )
-plt.ylim(0, 1)
+plt.xlabel("C value")
+plt.title("Validation Accuracy vs Regularization Strength (C)")
+# plt.show()
+
+print(f"\nBest C selected from validation: {best_C:.4g}")
+
+# ===========================================================
+# STEP 3 — Final model (TRAIN + VAL → TEST)
+# ===========================================================
+X_trainval = np.vstack([X_train, X_val])
+y_trainval = np.hstack([y_train, y_val])
+
+scaler = StandardScaler()
+X_trainval_s = scaler.fit_transform(X_trainval)
+X_test_s     = scaler.transform(X_test)
+
+final_model = LogisticRegression(
+    C=best_C,
+    solver="lbfgs",
+    max_iter=2000
+)
+
+final_model.fit(X_trainval_s, y_trainval)
+y_test_pred = final_model.predict(X_test_s)
+
+acc  = accuracy_score(y_test, y_test_pred)
+f1   = f1_score(y_test, y_test_pred, average="macro")
+prec = precision_score(y_test, y_test_pred, average="macro")
+rec  = recall_score(y_test, y_test_pred, average="macro")
+
+print("\n===== FINAL TEST METRICS =====")
+print(f"Accuracy:        {acc:.4f}")
+print(f"Macro F1:        {f1:.4f}")
+print(f"Macro Precision:{prec:.4f}")
+print(f"Macro Recall:   {rec:.4f}")
+
+# ---------------- Confusion Matrix ----------------
+cm = confusion_matrix(y_test, y_test_pred, labels=LABELS)
+cm_percent = cm.astype(float) / cm.sum(axis=1)[:, None] * 100
+
+disp = ConfusionMatrixDisplay(
+    confusion_matrix=np.round(cm_percent, 1),
+    display_labels=LABELS
+)
+
+# plt.figure(figsize=(6,5))
+disp.plot(cmap="Blues", values_format=".1f")
+plt.title("Logistic Regression Confusion Matrix (%) — Test Set")
+# plt.show()
+
+# ===========================================================
+# STEP 4 — 10-Fold CV (Frozen hyperparameters → CI)
+# ===========================================================
+skf = StratifiedKFold(
+    n_splits=K_FOLDS,
+    shuffle=True,
+    random_state=RANDOM_SEED
+)
+
+cv_accuracies = []
+
+for train_idx, val_idx in skf.split(X, y):
+    X_tr, X_va = X[train_idx], X[val_idx]
+    y_tr, y_va = y[train_idx], y[val_idx]
+
+    scaler = StandardScaler()
+    X_tr = scaler.fit_transform(X_tr)
+    X_va = scaler.transform(X_va)
+
+    model = LogisticRegression(
+        C=best_C,
+        solver="lbfgs",
+        max_iter=2000
+    )
+
+    model.fit(X_tr, y_tr)
+    y_va_pred = model.predict(X_va)
+
+    cv_accuracies.append(accuracy_score(y_va, y_va_pred))
+
+cv_accuracies = np.array(cv_accuracies)
+mean_acc = cv_accuracies.mean()
+std_acc  = cv_accuracies.std()
+ci_95 = 1.96 * std_acc
+
+print("\n===== 10-FOLD CV RESULTS =====")
+print(f"Mean Accuracy: {mean_acc:.4f}")
+print(f"95% CI:        [{mean_acc-ci_95:.4f}, {mean_acc+ci_95:.4f}]")
+
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+
+# ===========================================================
+# CI Bar Plot — Mean Accuracy with 95% CI
+# ===========================================================
+plt.figure(figsize=(5,5))
+
+plt.bar(
+    ["Logistic Regression"],
+    [mean_acc],
+    yerr=[ci_95],
+    capsize=8,
+    color="#4CAF50",
+    alpha=0.8
+)
+
+# Add headroom so CI is clearly visible
+y_max = max(1.0, mean_acc + ci_95 + 0.05)
+plt.ylim(0, y_max)
+
 plt.ylabel("Accuracy")
-plt.title("Label Permutation Test (C = 10000)")
-plt.grid(axis="y", linestyle="--", alpha=0.6)
+plt.title("10-Fold Cross-Validation Accuracy\n(Mean ± 95% CI)")
+plt.grid(axis="y", linestyle="--", alpha=0.5)
+
+# -----------------------------------------------------------
+# Legend (proxy artists)
+# -----------------------------------------------------------
+legend_elements = [
+    Patch(facecolor="#4CAF50", edgecolor="black", label="Mean Accuracy"),
+    Line2D([0], [0], color="black", linewidth=2, label="95% Confidence Interval")
+]
+
+plt.legend(handles=legend_elements, loc="lower right")
+
 plt.show()
+
 
