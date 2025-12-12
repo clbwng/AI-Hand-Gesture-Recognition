@@ -19,6 +19,8 @@ import mediapipe as mp
 import argparse
 
 mp_hands = mp.solutions.hands
+# IMPORTANT_LANDMARKS = [0, 4, 8, 12, 16, 20]  # wrist + finger tips
+
 
 def extract_finger_label(filename):
     # Format: 5_103_jpg.rf.xxxxx.jpg → label = 5
@@ -35,6 +37,9 @@ def process_folder(input_dir, output_csv):
 
         writer = csv.writer(csvfile)
         header = ["image_path", "label_fingers"]
+        # header += [f"x{i}" for i in IMPORTANT_LANDMARKS]
+        # header += [f"y{i}" for i in IMPORTANT_LANDMARKS]
+        # header += [f"z{i}" for i in IMPORTANT_LANDMARKS]
         header += [f"x{i}" for i in range(21)]
         header += [f"y{i}" for i in range(21)]
         header += [f"z{i}" for i in range(21)]
@@ -67,9 +72,13 @@ def process_folder(input_dir, output_csv):
 
             lm = results.multi_hand_landmarks[0].landmark
 
+            # xs = [lm[i].x for i in IMPORTANT_LANDMARKS]
+            # ys = [lm[i].y for i in IMPORTANT_LANDMARKS]
+            # zs = [lm[i].z for i in IMPORTANT_LANDMARKS]
             xs = [p.x for p in lm]
             ys = [p.y for p in lm]
             zs = [p.z for p in lm]
+
 
             writer.writerow([img_path, label] + xs + ys + zs)
             print("Processed:", filename)

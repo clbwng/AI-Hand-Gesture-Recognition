@@ -3,7 +3,7 @@ import random
 import cv2
 import numpy as np
 
-CSV_PATH = "finger_landmarks.csv"   # <-- your generated CSV
+CSV_PATH = "landmarks_reduced.csv"   # <-- your generated CSV
 NUM_SAMPLES = 5                     # how many random samples to show
 
 

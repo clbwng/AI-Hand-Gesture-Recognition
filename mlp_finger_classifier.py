@@ -10,11 +10,21 @@ from sklearn.metrics import (
 import matplotlib.pyplot as plt
 import hashlib
 
-CSV_PATH = "landmarks.csv"
+# ===========================================================
+# Configuration
+# ===========================================================
+CSV_PATH = "landmarks_reduced.csv"
 LABELS = [0,1,2,3,4,5]
 
+BASE_HIDDEN = (64, 32)
+BASE_ALPHA  = 5e-4
+BASE_LR     = 1e-3
+
+RANDOM_STATE = 42
+
+
 # ===========================================================
-# Helper: Uniform evaluation across all models
+# Helper: shared evaluation metrics
 # ===========================================================
 def evaluate_model(y_true, y_pred, labels=LABELS):
     acc  = accuracy_score(y_true, y_pred)
@@ -38,27 +48,34 @@ feature_cols = [c for c in df.columns if c.startswith(("x","y","z"))]
 
 def row_hash(row):
     return hashlib.md5(str(tuple(row[feature_cols])).encode()).hexdigest()
+
 df["hash"] = df.apply(row_hash, axis=1)
 
 print("\n===== DATASET SUMMARY =====")
 print(df["label_fingers"].value_counts().sort_index())
+print("Total samples:", len(df))
+print("Unique landmark sets:", df["hash"].nunique(), "\n")
 
 X = df[feature_cols].values
 y = df["label_fingers"].values
 
 
 # ===========================================================
-# STEP 2 — Train/test split
+# STEP 2 — Stratified Train/Test Split
 # ===========================================================
 X_train, X_test, y_train, y_test = train_test_split(
     X, y,
-    test_size=0.20,
+    test_size=0.80,
     stratify=y,
-    random_state=42
+    random_state=RANDOM_STATE
 )
 
+print("Train distribution:", pd.Series(y_train).value_counts().sort_index().to_dict())
+print("Test distribution:",  pd.Series(y_test).value_counts().sort_index().to_dict(), "\n")
+
+
 # ===========================================================
-# STEP 3 — Scale features
+# STEP 3 — Feature Scaling (CRITICAL for MLP)
 # ===========================================================
 scaler = StandardScaler()
 X_train = scaler.fit_transform(X_train)
@@ -66,148 +83,152 @@ X_test  = scaler.transform(X_test)
 
 
 # ===========================================================
-# STEP 4 — Expanded Hyperparameter Sweep (good + bad models)
+# Helper: run one MLP experiment
 # ===========================================================
+def run_mlp(hidden, alpha, lr):
+    mlp = MLPClassifier(
+        hidden_layer_sizes=hidden,
+        activation="relu",
+        solver="adam",
+        alpha=alpha,
+        learning_rate_init=lr,
+        max_iter=400,
+        batch_size=32,
+        shuffle=True,
+        random_state=RANDOM_STATE,
+        early_stopping=True,
+        n_iter_no_change=10
+    )
 
-HIDDEN_SIZES = [
-    (8,), (16,), (16,8),        # deliberately UNDERFIT
-    (32,), (64,), (64,32),      # baseline configs
-    (128,64), (256,128,64)      # deliberately OVERFIT
-]
+    mlp.fit(X_train, y_train)
+    y_pred = mlp.predict(X_test)
 
-ALPHAS = [
-    1e-5, 5e-5,                 # weak regularization (overfit)
-    1e-4, 5e-4, 1e-3,           # normal range
-    1e-2, 1e-1                 # VERY strong regularization (underfit)
-]
-
-LEARNING_RATES = [
-    1e-5, 5e-5,                 # too small → almost no learning
-    5e-4, 1e-3, 5e-3,           # normal range
-    1e-2                        # too large → instability
-]
-
-
-results = []
-best_model = None
-best_acc = -1
-best_cm = None
-
-print("\n===== SWEEPING MLP HYPERPARAMETERS =====\n")
-
-for hs in HIDDEN_SIZES:
-    for alpha in ALPHAS:
-        for lr in LEARNING_RATES:
-
-            print(f"Training MLP: hidden={hs}, alpha={alpha}, lr={lr}")
-
-            mlp = MLPClassifier(
-                hidden_layer_sizes=hs,
-                activation='relu',
-                solver='adam',
-                alpha=alpha,
-                learning_rate_init=lr,
-                max_iter=400,
-                batch_size=32,
-                shuffle=True,
-                random_state=42,
-                early_stopping=True,
-                n_iter_no_change=10
-            )
-
-            try:
-                mlp.fit(X_train, y_train)
-                y_pred = mlp.predict(X_test)
-
-                acc, f1, prec, rec, cm_percent = evaluate_model(y_test, y_pred)
-
-            except Exception as e:
-                print("Model failed:", e)
-                acc = f1 = prec = rec = 0
-
-            # Save result
-            results.append({
-                "hidden": str(hs),
-                "alpha": alpha,
-                "lr": lr,
-                "accuracy": acc,
-                "f1": f1,
-                "precision": prec,
-                "recall": rec
-            })
-
-            # Track best
-            if acc > best_acc:
-                best_acc = acc
-                best_model = mlp
-                best_cm = cm_percent.copy()
-                best_config = (hs, alpha, lr)
-
-            print(f"  → Accuracy={acc:.4f}, F1={f1:.4f}\n")
+    return evaluate_model(y_test, y_pred)
 
 
 # ===========================================================
-# STEP 5 — Summary Table
+# STEP 4 — Experiment 1: Model Capacity
 # ===========================================================
-results_df = pd.DataFrame(results)
-results_df_sorted = results_df.sort_values(by="accuracy", ascending=False)
-print("\n===== MLP HYPERPARAMETER SWEEP RESULTS =====")
-print(results_df_sorted.to_string(index=False))
+capacity_configs = [(8,), (16,), (32,), (64,), (64,32), (128,64)]
+capacity_results = []
+
+print("\n===== EXPERIMENT 1: MODEL CAPACITY =====\n")
+
+for hs in capacity_configs:
+    acc, f1, prec, rec, _ = run_mlp(hs, BASE_ALPHA, BASE_LR)
+
+    capacity_results.append({
+        "hidden": str(hs),
+        "accuracy": acc,
+        "f1": f1,
+        "precision": prec,
+        "recall": rec
+    })
+
+    print(f"Hidden={hs} → Acc={acc:.4f}, F1={f1:.4f}")
+
+cap_df = pd.DataFrame(capacity_results)
 
 
 # ===========================================================
-# STEP 6 — Best Model Confusion Matrix
+# STEP 5 — Experiment 2: Regularization Strength
 # ===========================================================
-print("\n===== BEST MODEL CONFIGURATION =====")
-print(f"Hidden: {best_config[0]}")
-print(f"Alpha:  {best_config[1]}")
-print(f"LR:     {best_config[2]}")
-print(f"Best Accuracy: {best_acc:.4f}")
+alpha_values = [1e-5, 1e-4, 5e-4, 1e-3, 1e-2]
+alpha_results = []
+
+print("\n===== EXPERIMENT 2: REGULARIZATION =====\n")
+
+for alpha in alpha_values:
+    acc, f1, prec, rec, _ = run_mlp(BASE_HIDDEN, alpha, BASE_LR)
+
+    alpha_results.append({
+        "alpha": alpha,
+        "accuracy": acc,
+        "f1": f1,
+        "precision": prec,
+        "recall": rec
+    })
+
+    print(f"Alpha={alpha} → Acc={acc:.4f}, F1={f1:.4f}")
+
+alpha_df = pd.DataFrame(alpha_results)
+
+
+# ===========================================================
+# STEP 6 — Experiment 3: Learning Rate
+# ===========================================================
+lr_values = [1e-4, 5e-4, 1e-3, 5e-3]
+lr_results = []
+
+print("\n===== EXPERIMENT 3: LEARNING RATE =====\n")
+
+for lr in lr_values:
+    acc, f1, prec, rec, _ = run_mlp(BASE_HIDDEN, BASE_ALPHA, lr)
+
+    lr_results.append({
+        "lr": lr,
+        "accuracy": acc,
+        "f1": f1,
+        "precision": prec,
+        "recall": rec
+    })
+
+    print(f"LR={lr} → Acc={acc:.4f}, F1={f1:.4f}")
+
+lr_df = pd.DataFrame(lr_results)
+
+
+# ===========================================================
+# STEP 7 — Plots
+# ===========================================================
+
+# Capacity plot
+plt.figure(figsize=(7,5))
+plt.plot(
+    [sum(eval(h)) for h in cap_df["hidden"]],
+    cap_df["accuracy"],
+    marker="o"
+)
+plt.xlabel("Model Capacity (sum of hidden units)")
+plt.ylabel("Accuracy")
+plt.title("MLP Accuracy vs Model Capacity")
+plt.grid(True)
+plt.show()
+
+# Regularization plot
+plt.figure(figsize=(7,5))
+plt.plot(alpha_df["alpha"], alpha_df["accuracy"], marker="o")
+plt.xscale("log")
+plt.xlabel("Alpha (L2 regularization)")
+plt.ylabel("Accuracy")
+plt.title("MLP Accuracy vs Regularization Strength")
+plt.grid(True)
+plt.show()
+
+# Learning rate plot
+plt.figure(figsize=(7,5))
+plt.plot(lr_df["lr"], lr_df["accuracy"], marker="o")
+plt.xscale("log")
+plt.xlabel("Learning Rate")
+plt.ylabel("Accuracy")
+plt.title("MLP Accuracy vs Learning Rate")
+plt.grid(True)
+plt.show()
+
+
+# ===========================================================
+# STEP 8 — Confusion Matrix for Best MLP
+# ===========================================================
+print("\n===== BEST MLP CONFUSION MATRIX =====")
+
+best_acc, _, _, _, best_cm = run_mlp(BASE_HIDDEN, BASE_ALPHA, BASE_LR)
 
 disp = ConfusionMatrixDisplay(
     confusion_matrix=np.round(best_cm, 1),
     display_labels=LABELS
 )
+
 fig, ax = plt.subplots(figsize=(6,5))
 disp.plot(cmap="Blues", ax=ax, values_format=".1f")
-plt.title(f"Best MLP Confusion Matrix (%) | Acc={best_acc:.3f}")
-plt.show()
-
-
-# ===========================================================
-# STEP 7 — Line Plots for Hyperparameter Effects
-# ===========================================================
-
-# Plot 1: Accuracy vs alpha
-plt.figure(figsize=(7,5))
-plt.plot(results_df["alpha"], results_df["accuracy"], 'o-', linewidth=2)
-plt.xscale("log")
-plt.xlabel("Alpha (L2 regularization)")
-plt.ylabel("Accuracy")
-plt.title("MLP Accuracy vs Regularization Strength (alpha)")
-plt.grid(True, linestyle="--")
-plt.show()
-
-# Plot 2: Accuracy vs learning rate
-plt.figure(figsize=(7,5))
-plt.plot(results_df["lr"], results_df["accuracy"], 'o-', linewidth=2)
-plt.xscale("log")
-plt.xlabel("Learning Rate")
-plt.ylabel("Accuracy")
-plt.title("MLP Accuracy vs Learning Rate")
-plt.grid(True, linestyle="--")
-plt.show()
-
-# Plot 3: Accuracy vs network size
-def network_size(hs):
-    return sum(hs)   # simple measure of capacity
-
-results_df["capacity"] = results_df["hidden"].apply(eval).apply(network_size)
-
-plt.figure(figsize=(7,5))
-plt.plot(results_df["capacity"], results_df["accuracy"], 'o-', linewidth=2)
-plt.xlabel("Network Capacity (sum of hidden units)")
-plt.ylabel("Accuracy")
-plt.title("MLP Accuracy vs Model Capacity")
-plt.grid(True, linestyle="--")
+plt.title(f"MLP Confusion Matrix (%) | Acc={best_acc:.3f}")
 plt.show()
