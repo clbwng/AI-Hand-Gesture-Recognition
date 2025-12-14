@@ -15,6 +15,10 @@ from sklearn.metrics import (
     ConfusionMatrixDisplay
 )
 
+def remove_spines(ax):
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
 # ===========================================================
 # CONFIG
 # ===========================================================
@@ -90,17 +94,31 @@ for C in C_VALUES:
 
 sweep_df = pd.DataFrame(sweep_results)
 
-# ---------------- Heatmap ----------------
-plt.figure(figsize=(8,4))
-sns.heatmap(
-    sweep_df[["val_accuracy"]].T,
-    annot=True,
-    fmt=".3f",
-    cmap="viridis",
-    xticklabels=[f"{c:.1e}" for c in sweep_df["C"]]
+# ===========================================================
+# Validation Accuracy vs C (Line Plot)
+# ===========================================================
+fig, ax = plt.subplots(figsize=(7,5))
+
+ax.plot(
+    sweep_df["C"],
+    sweep_df["val_accuracy"],
+    marker="o",
+    linestyle="-",
+    linewidth=2
 )
-plt.xlabel("C value")
-plt.title("Validation Accuracy vs Regularization Strength (C)")
+
+ax.set_xscale("log")
+ax.set_xlabel("Regularization Strength (C)")
+ax.set_ylabel("Validation Accuracy")
+ax.set_title("Logistic Regression: Validation Accuracy vs C")
+
+ax.grid(True, linestyle="--", alpha=0.5)
+
+# # Remove borders/spines for clean look
+# for spine in ax.spines.values():
+#     spine.set_visible(False)
+
+plt.tight_layout()
 # plt.show()
 
 print(f"\nBest C selected from validation: {best_C:.4g}")
@@ -139,14 +157,27 @@ print(f"Macro Recall:   {rec:.4f}")
 cm = confusion_matrix(y_test, y_test_pred, labels=LABELS)
 cm_percent = cm.astype(float) / cm.sum(axis=1)[:, None] * 100
 
+fig, ax = plt.subplots(figsize=(6,5))
+
 disp = ConfusionMatrixDisplay(
     confusion_matrix=np.round(cm_percent, 1),
     display_labels=LABELS
 )
 
-# plt.figure(figsize=(6,5))
-disp.plot(cmap="Blues", values_format=".1f")
-plt.title("Logistic Regression Confusion Matrix (%) — Test Set")
+disp.plot(
+    cmap="Blues",
+    values_format=".1f",
+    ax=ax,
+    colorbar=True
+)
+
+ax.set_title("Logistic Regression Confusion Matrix (%) — Test Set")
+
+# 🔵 REMOVE BORDER
+remove_spines(ax)
+
+plt.tight_layout()
+# plt.show()
 # plt.show()
 
 # ===========================================================
@@ -208,10 +239,10 @@ plt.bar(
 # Add headroom so CI is clearly visible
 y_max = max(1.0, mean_acc + ci_95 + 0.05)
 plt.ylim(0, y_max)
-
+# plt.tight_layout()
 plt.ylabel("Accuracy")
 plt.title("10-Fold Cross-Validation Accuracy\n(Mean ± 95% CI)")
-plt.grid(axis="y", linestyle="--", alpha=0.5)
+plt.grid(axis="y", linestyle="-", alpha=0.5)
 
 # -----------------------------------------------------------
 # Legend (proxy artists)
@@ -224,5 +255,90 @@ legend_elements = [
 plt.legend(handles=legend_elements, loc="lower right")
 
 plt.show()
+
+def min_class_count(y):
+    return pd.Series(y).value_counts().min()
+
+# ===========================================================
+# STEP 5 — Dataset Size Sensitivity (Learning Curve)
+# ===========================================================
+print("\n===== DATASET SIZE SENSITIVITY ANALYSIS =====")
+
+# Percentages of dataset to evaluate
+
+learning_curve_results = []
+
+dataset_fracs = np.linspace(0.01, 1.0, 25)
+
+for frac in dataset_fracs:
+    print(f"Using {int(frac*100)}% of dataset")
+
+    # ---------------------------------------
+    # Subsample fraction (handle 100%)
+    # ---------------------------------------
+    if frac < 1.0:
+        X_frac, _, y_frac, _ = train_test_split(
+            X,
+            y,
+            train_size=frac,
+            stratify=y,
+            random_state=RANDOM_SEED
+        )
+    else:
+        X_frac, y_frac = X.copy(), y.copy()
+
+    # ---------------------------------------
+    # CHECK: can we stratify further?
+    # ---------------------------------------
+    if min_class_count(y_frac) < 2:
+        print("  ⚠️ Skipping — not enough samples per class")
+        continue
+
+    # ---------------------------------------
+    # 80 / 20 internal split
+    # ---------------------------------------
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        X_frac,
+        y_frac,
+        test_size=0.20,
+        stratify=y_frac,
+        random_state=RANDOM_SEED
+    )
+
+    # ---------------------------------------
+    # Train + evaluate
+    # ---------------------------------------
+    scaler = StandardScaler()
+    X_tr = scaler.fit_transform(X_tr)
+    X_te = scaler.transform(X_te)
+
+    model = LogisticRegression(
+        C=best_C,
+        solver="lbfgs",
+        max_iter=2000
+    )
+
+    model.fit(X_tr, y_tr)
+    y_pred = model.predict(X_te)
+
+    acc = accuracy_score(y_te, y_pred)
+
+    learning_curve_results.append({
+        "dataset_fraction": frac,
+        "dataset_percent": frac * 100,
+        "accuracy": acc,
+        "n_samples": len(X_frac)
+    })
+
+# Convert to DataFrame
+lc_df = pd.DataFrame(learning_curve_results)
+
+# ===========================================================
+# Save results to CSV
+# ===========================================================
+CSV_OUT = "logistic_regression_learning_curve.csv"
+lc_df.to_csv(CSV_OUT, index=False)
+print(f"\nLearning curve data saved to: {CSV_OUT}")
+# ===========================================================
 
 

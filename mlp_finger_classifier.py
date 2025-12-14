@@ -24,12 +24,14 @@ from matplotlib.patches import Patch
 CSV_PATH = "landmarks_reduced.csv"
 LABELS = [0,1,2,3,4,5]
 
-HIDDEN_SIZES = [(16,), (32,), (64,), (64,32), (128,64)]
-ALPHAS = [1e-4, 5e-4, 1e-3]
-LEARNING_RATES = [5e-4, 1e-3, 5e-3]
+HIDDEN_SIZES = [(64, 32)]                 # fixed for parity with LR
+ALPHAS = [1e-6, 1e-4, 1e-2, 1e-1]
+LEARNING_RATES = [1e-5, 1e-4, 1e-3, 1e-2]
 
 K_FOLDS = 10
 RANDOM_SEED = 42
+
+LEARNING_CURVE_CSV = "mlp_learning_curve.csv"
 
 # ===========================================================
 # Load dataset
@@ -45,7 +47,7 @@ print("\n===== DATASET SUMMARY =====")
 print(df["label_fingers"].value_counts().sort_index())
 
 # ===========================================================
-# STEP 1 — Train / Validation / Test split (60 / 20 / 20)
+# STEP 1 — Train / Val / Test split (60 / 20 / 20)
 # ===========================================================
 X_temp, X_test, y_temp, y_test = train_test_split(
     X, y,
@@ -56,15 +58,10 @@ X_temp, X_test, y_temp, y_test = train_test_split(
 
 X_train, X_val, y_train, y_val = train_test_split(
     X_temp, y_temp,
-    test_size=0.25,   # 0.25 × 0.80 = 0.20
+    test_size=0.25,
     stratify=y_temp,
     random_state=RANDOM_SEED
 )
-
-print("\nSplit sizes:")
-print("Train:", len(X_train))
-print("Val:  ", len(X_val))
-print("Test: ", len(X_test))
 
 # ===========================================================
 # STEP 2 — Hyperparameter sweep (TRAIN → VAL)
@@ -73,129 +70,83 @@ scaler = StandardScaler()
 X_train_s = scaler.fit_transform(X_train)
 X_val_s   = scaler.transform(X_val)
 
-sweep_results = []
-best_config = None
+results = []
+best_cfg = None
 best_val_acc = -1
 
-for hs in HIDDEN_SIZES:
-    for alpha in ALPHAS:
-        for lr in LEARNING_RATES:
+for alpha in ALPHAS:
+    for lr in LEARNING_RATES:
+        model = MLPClassifier(
+            hidden_layer_sizes=HIDDEN_SIZES[0],
+            alpha=alpha,
+            learning_rate_init=lr,
+            activation="relu",
+            solver="adam",
+            max_iter=400,
+            early_stopping=True,
+            n_iter_no_change=10,
+            random_state=RANDOM_SEED
+        )
 
-            model = MLPClassifier(
-                hidden_layer_sizes=hs,
-                activation="relu",
-                solver="adam",
-                alpha=alpha,
-                learning_rate_init=lr,
-                max_iter=400,
-                batch_size=32,
-                shuffle=True,
-                random_state=RANDOM_SEED,
-                early_stopping=True,
-                n_iter_no_change=10
-            )
+        model.fit(X_train_s, y_train)
+        acc = accuracy_score(y_val, model.predict(X_val_s))
 
-            model.fit(X_train_s, y_train)
-            y_val_pred = model.predict(X_val_s)
-            acc = accuracy_score(y_val, y_val_pred)
+        results.append({"alpha": alpha, "lr": lr, "val_accuracy": acc})
 
-            sweep_results.append({
-                "hidden": str(hs),
-                "alpha": alpha,
-                "lr": lr,
-                "val_accuracy": acc
-            })
+        if acc > best_val_acc:
+            best_val_acc = acc
+            best_cfg = (alpha, lr)
 
-            if acc > best_val_acc:
-                best_val_acc = acc
-                best_config = (hs, alpha, lr)
+sweep_df = pd.DataFrame(results)
 
-sweep_df = pd.DataFrame(sweep_results)
+# ---------------- Heatmap ----------------
+pivot = sweep_df.pivot(index="alpha", columns="lr", values="val_accuracy")
 
-print("\nBest MLP config from validation:")
-print(f"Hidden={best_config[0]}, Alpha={best_config[1]}, LR={best_config[2]}")
-
-# ===========================================================
-# CONTOURF — Alpha × Learning Rate (fixed hidden size)
-# ===========================================================
-fixed_hidden = best_config[0]
-accuracy_grid = np.zeros((len(ALPHAS), len(LEARNING_RATES)))
-
-for i, alpha in enumerate(ALPHAS):
-    for j, lr in enumerate(LEARNING_RATES):
-        row = sweep_df[
-            (sweep_df["hidden"] == str(fixed_hidden)) &
-            (sweep_df["alpha"] == alpha) &
-            (sweep_df["lr"] == lr)
-        ]
-        accuracy_grid[i, j] = row["val_accuracy"].values[0]
-
-XX, YY = np.meshgrid(
-    np.arange(len(LEARNING_RATES)),
-    np.arange(len(ALPHAS))
+plt.figure(figsize=(7,5))
+sns.heatmap(
+    pivot,
+    annot=True,
+    fmt=".3f",
+    cmap="Blues",
+    cbar_kws={"label": "Validation Accuracy"}
 )
-
-plt.figure(figsize=(8,6))
-contour = plt.contourf(
-    XX, YY, accuracy_grid,
-    levels=40, cmap="viridis"
-)
-plt.colorbar(contour, label="Validation Accuracy")
-
-CS = plt.contour(
-    XX, YY, accuracy_grid,
-    levels=[0.7, 0.8, 0.85, 0.9, 0.95],
-    colors="black"
-)
-plt.clabel(CS, inline=True, fontsize=9, fmt="%.2f")
-
-plt.xticks(
-    np.arange(len(LEARNING_RATES)),
-    [f"{lr:.1e}" for lr in LEARNING_RATES],
-    rotation=45
-)
-plt.yticks(
-    np.arange(len(ALPHAS)),
-    [f"{a:.1e}" for a in ALPHAS]
-)
-
+plt.title("MLP Validation Accuracy (α × Learning Rate)")
 plt.xlabel("Learning Rate")
-plt.ylabel("Alpha (L2 Regularization)")
-plt.title(f"MLP Validation Accuracy Surface\nHidden Layers = {fixed_hidden}")
+plt.ylabel("Alpha (L2)")
 plt.tight_layout()
-plt.show()
+# plt.show()
+
+print("\nBest MLP hyperparameters:")
+print(f"Alpha={best_cfg[0]}, Learning rate={best_cfg[1]}")
 
 # ===========================================================
-# STEP 3 — Final model (TRAIN + VAL → TEST)
+# STEP 3 — Final model (TRAIN+VAL → TEST)
 # ===========================================================
 X_trainval = np.vstack([X_train, X_val])
 y_trainval = np.hstack([y_train, y_val])
 
 scaler = StandardScaler()
 X_trainval_s = scaler.fit_transform(X_trainval)
-X_test_s     = scaler.transform(X_test)
+X_test_s = scaler.transform(X_test)
 
 final_model = MLPClassifier(
-    hidden_layer_sizes=best_config[0],
-    alpha=best_config[1],
-    learning_rate_init=best_config[2],
+    hidden_layer_sizes=HIDDEN_SIZES[0],
+    alpha=best_cfg[0],
+    learning_rate_init=best_cfg[1],
     activation="relu",
     solver="adam",
     max_iter=400,
-    batch_size=32,
-    shuffle=True,
-    random_state=RANDOM_SEED,
     early_stopping=True,
-    n_iter_no_change=10
+    random_state=RANDOM_SEED
 )
 
 final_model.fit(X_trainval_s, y_trainval)
 y_test_pred = final_model.predict(X_test_s)
 
-acc  = accuracy_score(y_test, y_test_pred)
-f1   = f1_score(y_test, y_test_pred, average="macro")
+acc = accuracy_score(y_test, y_test_pred)
+f1 = f1_score(y_test, y_test_pred, average="macro")
 prec = precision_score(y_test, y_test_pred, average="macro")
-rec  = recall_score(y_test, y_test_pred, average="macro")
+rec = recall_score(y_test, y_test_pred, average="macro")
 
 print("\n===== FINAL TEST METRICS (MLP) =====")
 print(f"Accuracy:        {acc:.4f}")
@@ -211,83 +162,113 @@ disp = ConfusionMatrixDisplay(
     confusion_matrix=np.round(cm_percent, 1),
     display_labels=LABELS
 )
-
 disp.plot(cmap="Blues", values_format=".1f")
 plt.title("MLP Confusion Matrix (%) — Test Set")
-plt.show()
+# plt.show()
 
 # ===========================================================
-# STEP 4 — 10-Fold CV (Frozen hyperparameters → CI)
+# STEP 4 — 10-Fold CV (Frozen hyperparameters)
 # ===========================================================
-skf = StratifiedKFold(
-    n_splits=K_FOLDS,
-    shuffle=True,
-    random_state=RANDOM_SEED
-)
+skf = StratifiedKFold(n_splits=K_FOLDS, shuffle=True, random_state=RANDOM_SEED)
+cv_accs = []
 
-cv_accuracies = []
-
-for train_idx, val_idx in skf.split(X, y):
-    X_tr, X_va = X[train_idx], X[val_idx]
-    y_tr, y_va = y[train_idx], y[val_idx]
-
+for tr, va in skf.split(X, y):
     scaler = StandardScaler()
-    X_tr = scaler.fit_transform(X_tr)
-    X_va = scaler.transform(X_va)
+    X_tr = scaler.fit_transform(X[tr])
+    X_va = scaler.transform(X[va])
 
     model = MLPClassifier(
-        hidden_layer_sizes=best_config[0],
-        alpha=best_config[1],
-        learning_rate_init=best_config[2],
-        activation="relu",
-        solver="adam",
+        hidden_layer_sizes=HIDDEN_SIZES[0],
+        alpha=best_cfg[0],
+        learning_rate_init=best_cfg[1],
         max_iter=400,
-        batch_size=32,
-        shuffle=True,
-        random_state=RANDOM_SEED,
         early_stopping=True,
-        n_iter_no_change=10
+        random_state=RANDOM_SEED
     )
 
-    model.fit(X_tr, y_tr)
-    y_va_pred = model.predict(X_va)
+    model.fit(X_tr, y[tr])
+    cv_accs.append(accuracy_score(y[va], model.predict(X_va)))
 
-    cv_accuracies.append(accuracy_score(y_va, y_va_pred))
-
-cv_accuracies = np.array(cv_accuracies)
-mean_acc = cv_accuracies.mean()
-std_acc  = cv_accuracies.std()
-ci_95 = 1.96 * std_acc
+cv_accs = np.array(cv_accs)
+mean_acc = cv_accs.mean()
+ci_95 = 1.96 * cv_accs.std()
 
 print("\n===== 10-FOLD CV RESULTS (MLP) =====")
 print(f"Mean Accuracy: {mean_acc:.4f}")
-print(f"95% CI:        [{mean_acc-ci_95:.4f}, {mean_acc+ci_95:.4f}]")
+print(f"95% CI: [{mean_acc-ci_95:.4f}, {mean_acc+ci_95:.4f}]")
 
-# ===========================================================
-# CI Bar Plot
-# ===========================================================
+# ---------------- CI Bar Plot ----------------
 plt.figure(figsize=(5,5))
-
-plt.bar(
-    ["MLP"],
-    [mean_acc],
-    yerr=[ci_95],
-    capsize=8,
-    color="#2196F3",
-    alpha=0.8
-)
-
-y_max = max(1.0, mean_acc + ci_95 + 0.05)
-plt.ylim(0, y_max)
-
+plt.bar(["MLP"], [mean_acc], yerr=[ci_95], capsize=8, color="#2196F3")
+plt.ylim(0, max(1.0, mean_acc + ci_95 + 0.05))
 plt.ylabel("Accuracy")
 plt.title("MLP 10-Fold CV Accuracy\n(Mean ± 95% CI)")
 plt.grid(axis="y", linestyle="--", alpha=0.5)
-
-legend_elements = [
-    Patch(facecolor="#2196F3", edgecolor="black", label="Mean Accuracy"),
-    Line2D([0], [0], color="black", linewidth=2, label="95% Confidence Interval")
-]
-
-plt.legend(handles=legend_elements)
 plt.show()
+
+def min_class_count(y):
+    return pd.Series(y).value_counts().min()
+
+
+# ===========================================================
+# STEP 5 — Dataset size sensitivity (CSV output)
+# ===========================================================
+rows = []
+
+for frac in np.linspace(0.05, 1.0, 20):
+    print(f"Using {int(frac*100)}% of dataset")
+
+    # ---------------------------------------
+    # Subsample fraction (handle 100%)
+    # ---------------------------------------
+    if frac < 1.0:
+        X_frac, _, y_frac, _ = train_test_split(
+            X,
+            y,
+            train_size=frac,
+            stratify=y,
+            random_state=RANDOM_SEED
+        )
+    else:
+        X_frac, y_frac = X.copy(), y.copy()
+
+    # ---------------------------------------
+    # CHECK: can we stratify further?
+    # ---------------------------------------
+    if min_class_count(y_frac) < 2:
+        print("  ⚠️ Skipping — not enough samples per class")
+        continue
+
+    # ---------------------------------------
+    # 80 / 20 internal split
+    # ---------------------------------------
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        X_frac,
+        y_frac,
+        test_size=0.20,
+        stratify=y_frac,
+        random_state=RANDOM_SEED
+    )
+
+    scaler = StandardScaler()
+    X_tr = scaler.fit_transform(X_tr)
+    X_te = scaler.transform(X_te)
+
+    model = MLPClassifier(
+        hidden_layer_sizes=HIDDEN_SIZES[0],
+        alpha=best_cfg[0],
+        learning_rate_init=best_cfg[1],
+        max_iter=400,
+        early_stopping=True,
+        random_state=RANDOM_SEED
+    )
+
+    model.fit(X_tr, y_tr)
+    acc = accuracy_score(y_te, model.predict(X_te))
+
+    rows.append({"dataset_percent": frac*100, "accuracy": acc})
+
+curve_df = pd.DataFrame(rows)
+curve_df.to_csv(LEARNING_CURVE_CSV, index=False)
+
+print(f"\nSaved learning curve data to {LEARNING_CURVE_CSV}")
