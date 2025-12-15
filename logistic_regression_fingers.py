@@ -346,9 +346,10 @@ def logistic_regression_learning_curve(
         acc = accuracy_score(y_test, clf.predict(X_test_s))
 
         rows.append({
-            "training_dataset_percentage": pct,
+            "dataset_percent": float(pct),
             "accuracy": acc,
         })
+
 
         print(f"Train % = {pct:3d}% | Samples = {n_samples:4d} | Test Acc = {acc:.4f}")
 
