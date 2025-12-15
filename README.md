@@ -1,6 +1,6 @@
 # AI Hand Gesture Recognition
 
-WHITEPAPER: https://drive.google.com/file/d/1C1uuupBMZ_RwiGJ-QhDkHX9WDe_hndD7/view?usp=sharing
+**WHITEPAPER:** https://drive.google.com/file/d/1C1uuupBMZ_RwiGJ-QhDkHX9WDe_hndD7/view?usp=sharing
 
 Using logistic regression, SVM, and MLP to classify hand gestures based on MediaPipe hand landmark detection.
 
