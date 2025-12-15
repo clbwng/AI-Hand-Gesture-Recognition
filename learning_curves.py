@@ -65,7 +65,7 @@ ax.plot(
 
 ax.set_xlabel("Dataset Size (%)")
 ax.set_ylabel("Accuracy")
-ax.set_title("Learning Curve: Logistic Regression vs MLP")
+ax.set_title("Learning Curve: Logistic Regression vs SVM vs MLP")
 
 ax.set_ylim(0, 1)
 ax.grid(True, linestyle="--", alpha=0.5)

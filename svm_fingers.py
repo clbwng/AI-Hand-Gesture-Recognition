@@ -274,6 +274,12 @@ def repeated_cv_best_model_ci(
 
     return (acc_mean, acc_ci, f1_mean, f1_ci)
 
+def evaluate_train_and_test_acc(X_train, y_train, X_test, y_test, clf):
+    """Returns (train_acc, test_acc) using clf.predict."""
+    yhat_tr = clf.predict(X_train)
+    yhat_te = clf.predict(X_test)
+    return accuracy_score(y_train, yhat_tr), accuracy_score(y_test, yhat_te)
+
 
 # -------------------------------
 # Utility: evaluate on test set + plot CM
@@ -509,12 +515,11 @@ def train_full_pipeline(csv_path, test_size=0.2, random_state=42):
         n_repeats=N_REPEATS,
         random_state=random_state,
     )
-
     # -------------------------
-    # Permutation test
+    # Permutation test (SVM): shuffle TRAIN labels, keep test labels unchanged
     # -------------------------
     print("\n==============================")
-    print("PERMUTATION TEST: shuffle TRAIN labels, keep test labels unchanged")
+    print("PERMUTATION TEST (SVM): shuffle TRAIN labels, keep test labels unchanged")
     print("==============================")
 
     rng = np.random.default_rng(random_state)
@@ -523,17 +528,26 @@ def train_full_pipeline(csv_path, test_size=0.2, random_state=42):
     perm_clf = clone(best_clf)
     perm_clf.fit(X_train, y_train_perm)
 
+    # Print BOTH train and test accuracy for permuted-label model
+    perm_train_acc, perm_test_acc = evaluate_train_and_test_acc(X_train, y_train, X_test, y_test, perm_clf)
+
+    print("\n=== Permuted-Label SVM Accuracy ===")
+    print(f"Train accuracy (evaluated on TRUE train labels): {perm_train_acc:.4f}")
+    print(f"Test accuracy  (evaluated on TRUE test labels) : {perm_test_acc:.4f}")
+
+    # Keep your detailed test metrics + CM if you want:
     perm_test_metrics = evaluate_on_test(X_test, y_test, perm_clf, title_suffix="(TRAIN LABELS PERMUTED, Held-out Test)")
 
     # Comparison bar chart
     plt.figure(figsize=(6, 4))
     plt.bar(["True labels", "Permuted train labels"],
-            [test_metrics["accuracy"], perm_test_metrics["accuracy"]])
+            [test_metrics["accuracy"], perm_test_acc])
     plt.ylim(0.0, 1.0)
     plt.ylabel("Test Accuracy")
     plt.title("Test Accuracy: True vs Permuted-Label Training")
     plt.tight_layout()
     plt.show()
+
 
 
     # -------------------------
