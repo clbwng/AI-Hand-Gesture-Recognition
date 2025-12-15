@@ -1,115 +1,93 @@
+# @misc{
+#         fingers-numbers_dataset,
+#         title = { Fingers Numbers Dataset },
+#         type = { Open Source Dataset },
+#         author = { Hands },
+#         howpublished = { \url{ https://universe.roboflow.com/hands-rirpj/fingers-numbers } },
+#         url = { https://universe.roboflow.com/hands-rirpj/fingers-numbers },
+#         journal = { Roboflow Universe },
+#         publisher = { Roboflow },
+#         year = { 2023 },
+#         month = { jun },
+#         note = { visited on 2025-12-10 },
+#     }
+
 import os
 import csv
 import cv2
 import mediapipe as mp
-
-DATA_DIR = "images/train"
-OUTPUT_CSV = "fingers_landmarks_clean.csv"
+import argparse
 
 mp_hands = mp.solutions.hands
+# IMPORTANT_LANDMARKS = [0, 4, 8, 12, 16, 20]  # wrist + finger tips
 
-# ---------------------------------------------------------
-# Extract labels from filename
-# Format: <uuid>_<finger><hand>.png  →  "5R", "3L", "0R"
-# ---------------------------------------------------------
-def extract_labels_from_filename(filename):
-    name, _ = os.path.splitext(filename)
-    finger = name[-2]        # '0'–'5'
-    hand = name[-1].upper()  # 'L' or 'R'
-    return hand, int(finger)
 
-# ---------------------------------------------------------
-# Optional preprocessing to improve detection accuracy
-# ---------------------------------------------------------
-def preprocess_image(img):
-    # Slight contrast boost
-    img = cv2.convertScaleAbs(img, alpha=1.2, beta=10)
+def extract_finger_label(filename):
+    # Format: 5_103_jpg.rf.xxxxx.jpg → label = 5
+    return int(filename.split("_")[0])
 
-    # Resize to a consistent larger width (MediaPipe performs better)
-    TARGET_WIDTH = 512
-    h, w = img.shape[:2]
-    scale = TARGET_WIDTH / w
-    img = cv2.resize(img, (TARGET_WIDTH, int(h * scale)))
-
-    return img
-
-# ---------------------------------------------------------
-# Main script
-# ---------------------------------------------------------
-def main():
+def process_folder(input_dir, output_csv):
     with mp_hands.Hands(
         static_image_mode=True,
         max_num_hands=1,
-        min_detection_confidence=0.1,   # stricter for better accuracy
-        min_tracking_confidence=0.1
-    ) as hands, open(OUTPUT_CSV, 'w', newline='') as csvfile:
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+        model_complexity=1
+    ) as hands, open(output_csv, "w", newline="") as csvfile:
 
         writer = csv.writer(csvfile)
-
-        # CSV header
-        header = ["image_path", "label_hand", "label_fingers"]
+        header = ["image_path", "label_fingers"]
+        # header += [f"x{i}" for i in IMPORTANT_LANDMARKS]
+        # header += [f"y{i}" for i in IMPORTANT_LANDMARKS]
+        # header += [f"z{i}" for i in IMPORTANT_LANDMARKS]
         header += [f"x{i}" for i in range(21)]
         header += [f"y{i}" for i in range(21)]
         header += [f"z{i}" for i in range(21)]
         writer.writerow(header)
 
-        print("Starting annotation...\n")
+        files = [f for f in os.listdir(input_dir)
+                 if f.lower().endswith(("png", "jpg", "jpeg"))]
 
-        for filename in os.listdir(DATA_DIR):
-            if not filename.lower().endswith((".png", ".jpg", ".jpeg")):
-                continue
+        for filename in files:
+            img_path = os.path.join(input_dir, filename)
 
-            img_path = os.path.join(DATA_DIR, filename)
-
-            # Parse labels
+            # label
             try:
-                label_hand, label_fingers = extract_labels_from_filename(filename)
-            except Exception:
+                label = extract_finger_label(filename)
+            except:
                 print("Skipping invalid filename:", filename)
                 continue
 
-            # Load image
             img = cv2.imread(img_path)
             if img is None:
                 print("Could not load:", img_path)
                 continue
 
-            # Preprocess for better detection
-            img_proc = preprocess_image(img)
-
-            img_rgb = cv2.cvtColor(img_proc, cv2.COLOR_BGR2RGB)
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             results = hands.process(img_rgb)
 
-            # No detection → skip
-            if not results.multi_hand_landmarks or not results.multi_handedness:
+            if not results.multi_hand_landmarks:
                 print("No hand detected:", filename)
                 continue
 
-            # Confidence filtering
-            handed = results.multi_handedness[0].classification[0]
-            score = handed.score
-
-            # Skip low-confidence detections
-            if score < 0.80:
-                print(f"Low confidence ({score:.2f}) → skipping:", filename)
-                continue
-
-            # Extract landmarks
             lm = results.multi_hand_landmarks[0].landmark
+
+            # xs = [lm[i].x for i in IMPORTANT_LANDMARKS]
+            # ys = [lm[i].y for i in IMPORTANT_LANDMARKS]
+            # zs = [lm[i].z for i in IMPORTANT_LANDMARKS]
             xs = [p.x for p in lm]
             ys = [p.y for p in lm]
             zs = [p.z for p in lm]
 
-            # Save to CSV
-            writer.writerow([img_path, label_hand, label_fingers] + xs + ys + zs)
 
-            print(f"OK: {filename} (score={score:.2f})")
-
-    print("\n---------------------------------------")
-    print(" Annotation complete! Saved to:")
-    print(" →", OUTPUT_CSV)
-    print("---------------------------------------\n")
+            writer.writerow([img_path, label] + xs + ys + zs)
+            print("Processed:", filename)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", required=True, help="Path to image folder")
+    parser.add_argument("--output", required=True, help="Path to output CSV")
+    args = parser.parse_args()
+
+    process_folder(args.input, args.output)
