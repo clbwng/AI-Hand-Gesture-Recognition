@@ -268,7 +268,7 @@ print("\n===== DATASET SIZE SENSITIVITY ANALYSIS =====")
 
 learning_curve_results = []
 
-dataset_fracs = np.linspace(0.01, 1.0, 25)
+dataset_fracs = np.linspace(0.05, 1.0, 95)
 
 for frac in dataset_fracs:
     print(f"Using {int(frac*100)}% of dataset")
@@ -341,4 +341,63 @@ lc_df.to_csv(CSV_OUT, index=False)
 print(f"\nLearning curve data saved to: {CSV_OUT}")
 # ===========================================================
 
+# ===========================================================
+# STEP 6 — Permuted Label Sanity Check
+# ===========================================================
+print("\n===== PERMUTED LABEL SANITY CHECK =====")
 
+rng = np.random.RandomState(RANDOM_SEED)
+
+# -----------------------------------------------------------
+# Permute labels (GLOBAL permutation)
+# -----------------------------------------------------------
+y_permuted = rng.permutation(y)
+
+# -----------------------------------------------------------
+# Same 60 / 20 / 20 split
+# -----------------------------------------------------------
+X_temp_p, X_test_p, y_temp_p, y_test_p = train_test_split(
+    X, y_permuted,
+    test_size=0.20,
+    stratify=y_permuted,
+    random_state=RANDOM_SEED
+)
+
+X_train_p, X_val_p, y_train_p, y_val_p = train_test_split(
+    X_temp_p, y_temp_p,
+    test_size=0.25,
+    stratify=y_temp_p,
+    random_state=RANDOM_SEED
+)
+
+# -----------------------------------------------------------
+# Train on TRAIN + VAL (same as final model)
+# -----------------------------------------------------------
+X_trainval_p = np.vstack([X_train_p, X_val_p])
+y_trainval_p = np.hstack([y_train_p, y_val_p])
+
+scaler = StandardScaler()
+X_trainval_p_s = scaler.fit_transform(X_trainval_p)
+X_test_p_s     = scaler.transform(X_test_p)
+
+perm_model = LogisticRegression(
+    C=best_C,
+    solver="lbfgs",
+    max_iter=2000,
+)
+
+perm_model.fit(X_trainval_p_s, y_trainval_p)
+
+# -----------------------------------------------------------
+# Evaluate
+# -----------------------------------------------------------
+y_train_pred_p = perm_model.predict(X_trainval_p_s)
+y_test_pred_p  = perm_model.predict(X_test_p_s)
+
+train_acc_p = accuracy_score(y_trainval_p, y_train_pred_p)
+test_acc_p  = accuracy_score(y_test_p, y_test_pred_p)
+
+print(f"Training Accuracy (permuted labels): {train_acc_p:.4f}")
+print(f"Test Accuracy     (permuted labels): {test_acc_p:.4f}")
+
+print(f"Chance Level Accuracy: {1.0 / len(LABELS):.4f}")

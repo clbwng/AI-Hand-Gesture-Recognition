@@ -215,7 +215,7 @@ def min_class_count(y):
 # ===========================================================
 rows = []
 
-for frac in np.linspace(0.05, 1.0, 20):
+for frac in np.linspace(0.05, 1.0, 95):
     print(f"Using {int(frac*100)}% of dataset")
 
     # ---------------------------------------
@@ -272,3 +272,69 @@ curve_df = pd.DataFrame(rows)
 curve_df.to_csv(LEARNING_CURVE_CSV, index=False)
 
 print(f"\nSaved learning curve data to {LEARNING_CURVE_CSV}")
+
+# ===========================================================
+# STEP 6 — Permuted Label Sanity Check (MLP)
+# ===========================================================
+print("\n===== PERMUTED LABEL SANITY CHECK (MLP) =====")
+
+rng = np.random.RandomState(RANDOM_SEED)
+
+# -----------------------------------------------------------
+# Permute labels (global permutation)
+# -----------------------------------------------------------
+y_perm = rng.permutation(y)
+
+# -----------------------------------------------------------
+# Same 60 / 20 / 20 split
+# -----------------------------------------------------------
+X_temp_p, X_test_p, y_temp_p, y_test_p = train_test_split(
+    X, y_perm,
+    test_size=0.20,
+    stratify=y_perm,
+    random_state=RANDOM_SEED
+)
+
+X_train_p, X_val_p, y_train_p, y_val_p = train_test_split(
+    X_temp_p, y_temp_p,
+    test_size=0.25,
+    stratify=y_temp_p,
+    random_state=RANDOM_SEED
+)
+
+# -----------------------------------------------------------
+# Train on TRAIN + VAL (same as final model)
+# -----------------------------------------------------------
+X_trainval_p = np.vstack([X_train_p, X_val_p])
+y_trainval_p = np.hstack([y_train_p, y_val_p])
+
+scaler = StandardScaler()
+X_trainval_p_s = scaler.fit_transform(X_trainval_p)
+X_test_p_s     = scaler.transform(X_test_p)
+
+perm_model = MLPClassifier(
+    hidden_layer_sizes=HIDDEN_SIZES[0],
+    alpha=best_cfg[0],
+    learning_rate_init=best_cfg[1],
+    activation="relu",
+    solver="adam",
+    max_iter=400,
+    early_stopping=True,
+    random_state=RANDOM_SEED
+)
+
+perm_model.fit(X_trainval_p_s, y_trainval_p)
+
+# -----------------------------------------------------------
+# Evaluate
+# -----------------------------------------------------------
+y_train_pred_p = perm_model.predict(X_trainval_p_s)
+y_test_pred_p  = perm_model.predict(X_test_p_s)
+
+train_acc_p = accuracy_score(y_trainval_p, y_train_pred_p)
+test_acc_p  = accuracy_score(y_test_p, y_test_pred_p)
+
+print(f"Training Accuracy (permuted labels): {train_acc_p:.4f}")
+print(f"Test Accuracy     (permuted labels): {test_acc_p:.4f}")
+print(f"Chance Level Accuracy:              {1.0 / len(LABELS):.4f}")
+
