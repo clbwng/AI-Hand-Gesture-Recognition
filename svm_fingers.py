@@ -9,7 +9,8 @@ from sklearn.model_selection import (
     train_test_split,
     GridSearchCV,
     RepeatedStratifiedKFold,
-    StratifiedShuffleSplit
+    StratifiedShuffleSplit,
+    StratifiedKFold
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -69,6 +70,45 @@ def load_landmark_csv(csv_path):
 # -------------------------------
 # Plot helper functions
 # -------------------------------
+
+def kfold_cv_mean_ci(X, y, clf, n_splits=10, random_state=42):
+    """
+    Runs Stratified K-Fold CV on (X,y) and returns mean accuracy and 95% CI.
+    CI computed as 1.96 * std/sqrt(n_splits).
+    """
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+    scores = []
+    for train_idx, val_idx in skf.split(X, y):
+        X_tr, X_val = X[train_idx], X[val_idx]
+        y_tr, y_val = y[train_idx], y[val_idx]
+
+        m = clone(clf)
+        m.fit(X_tr, y_tr)
+        y_hat = m.predict(X_val)
+        scores.append(accuracy_score(y_val, y_hat))
+
+    scores = np.array(scores, dtype=float)
+    mean = scores.mean()
+    std = scores.std(ddof=1) if len(scores) > 1 else 0.0
+    ci = 1.96 * std / np.sqrt(len(scores)) if len(scores) > 1 else 0.0
+    return mean, ci, scores
+
+
+def plot_single_bar_mean_ci(mean, ci, model_name="Model", title="10-Fold CV Accuracy (Mean ± 95% CI)"):
+    """
+    Makes a plot like your screenshot: one bar + errorbar (95% CI).
+    """
+    plt.figure(figsize=(6, 5))
+    plt.bar([model_name], [mean])
+    plt.errorbar([model_name], [mean], yerr=[ci], fmt="none", ecolor="black", capsize=8)
+    plt.ylim(0.0, 1.02)
+    plt.ylabel("Accuracy")
+    plt.title(title)
+    plt.grid(True, axis="y", linestyle="--", alpha=0.4)
+    plt.tight_layout()
+    plt.show()
+
 def plot_linear_results(df):
     df_lin = df[df["param_svm__kernel"] == "linear"].copy()
     if df_lin.empty:
@@ -256,23 +296,32 @@ def evaluate_on_test(X_test, y_test, clf, title_suffix=""):
     cm = confusion_matrix(y_test, y_pred)
     classes = sorted(np.unique(y_test))
 
+    # Normalize by true class (row-wise) → percentages
+    cm_percent = cm.astype(float) / cm.sum(axis=1, keepdims=True) * 100.0
+
     plt.figure(figsize=(7, 6))
     sns.heatmap(
-        cm,
+        cm_percent,
         annot=True,
-        fmt="d",
+        fmt=".1f",
         cmap="Blues",
         xticklabels=classes,
         yticklabels=classes,
+        cbar_kws={"label": "Percentage (%)"},
     )
     plt.xlabel("Predicted")
     plt.ylabel("True")
-    plt.title(f"Confusion Matrix {title_suffix}")
+    plt.title(f"Confusion Matrix (%) {title_suffix}")
     plt.tight_layout()
     plt.show()
 
-    return acc
 
+    return {
+        "accuracy": acc,
+        "precision_macro": prec,
+        "recall_macro": rec,
+        "f1_macro": f1,
+    }
 
 
 def learning_curve_on_fixed_test(
@@ -281,24 +330,30 @@ def learning_curve_on_fixed_test(
     X_test,
     y_test,
     best_clf,
-    fractions=None,
+    n_points=23,
+    min_frac=0.05,   # start at 5% to avoid tiny subsets
+    max_frac=1.0,    # end at 100%
     repeats=10,
     random_state=42,
+    csv_out_path="learning_curve.csv",
 ):
     """
-    Train best_clf on increasing fractions of the TRAIN pool, evaluate on FIXED test set.
-    Uses stratified subsampling of the training pool.
-    Plots mean test accuracy vs fraction with 95% CI error bars.
-    """
-    if fractions is None:
-        fractions = np.arange(0.1, 1.01, 0.1)
+    Train best_clf on evenly spaced fractions of the TRAIN pool, evaluate on FIXED test set.
 
-    results = []
+    - For frac < 1.0: stratified subsampling with 'repeats' runs -> mean accuracy
+    - For frac == 1.0: train once on full train pool -> single accuracy
+    Outputs CSV with columns: dataset_percent,accuracy
+    """
+    # 23 evenly spaced fractions between min_frac and max_frac (inclusive)
+    fractions = np.linspace(min_frac, max_frac, n_points, dtype=float)
+
+    results_rows = []
 
     print("\n==============================")
     print("Learning curve on fixed test set")
-    print(f"Fractions: {fractions}")
-    print(f"Repeats per fraction: {repeats}")
+    print(f"Points: {n_points} evenly spaced from {min_frac:.3f} to {max_frac:.3f}")
+    print(f"Repeats per fraction (<100%): {repeats}")
+    print(f"CSV output: {csv_out_path}")
     print("==============================\n")
 
     n_total = len(y_train)
@@ -308,27 +363,23 @@ def learning_curve_on_fixed_test(
         n_sub = int(round(frac * n_total))
         n_sub = max(1, min(n_sub, n_total))  # clamp
 
-        # ---- Special case: 100% of training pool ----
+        # 100% special case
         if n_sub == n_total:
             clf = clone(best_clf)
             clf.fit(X_train, y_train)
             acc = accuracy_score(y_test, clf.predict(X_test))
 
-            mean = acc
-            ci = 0.0  # no resampling here unless you want bootstrapping
+            dataset_percent = 100.0
+            results_rows.append({"dataset_percent": dataset_percent, "accuracy": acc})
 
-            lo = max(0.0, mean - ci)
-            hi = min(1.0, mean + ci)
-
-            results.append({"frac": frac, "n_sub": n_sub, "accs": np.array([acc]), "mean": mean, "ci": ci})
-            print(f"Train frac={frac:.1f} (n={n_sub:4d})  Test acc mean={mean:.4f}  95% CI=[{lo:.4f},{hi:.4f}]")
+            print(f"Train frac={frac:.6f} ({dataset_percent:.3f}%) n={n_sub:4d}  Test acc={acc:.4f}")
             continue
 
-        # ---- Stratified subsampling for frac < 1.0 ----
+        # Stratified subsampling for frac < 1.0
         sss = StratifiedShuffleSplit(
             n_splits=repeats,
             train_size=n_sub,
-            random_state=random_state + int(frac * 1000),
+            random_state=random_state + int(round(frac * 10000)),
         )
 
         accs = []
@@ -338,38 +389,38 @@ def learning_curve_on_fixed_test(
 
             clf = clone(best_clf)
             clf.fit(X_sub, y_sub)
-
-            y_pred = clf.predict(X_test)
-            accs.append(accuracy_score(y_test, y_pred))
+            accs.append(accuracy_score(y_test, clf.predict(X_test)))
 
         accs = np.array(accs, dtype=float)
-        mean = accs.mean()
-        std = accs.std(ddof=1) if len(accs) > 1 else 0.0
-        ci = 1.96 * std / np.sqrt(len(accs)) if len(accs) > 1 else 0.0
+        acc_mean = float(accs.mean())
 
-        # clip CI bounds to [0,1] for a bounded metric like accuracy
-        lo = max(0.0, mean - ci)
-        hi = min(1.0, mean + ci)
+        dataset_percent = frac * 100.0
+        results_rows.append({"dataset_percent": dataset_percent, "accuracy": acc_mean})
 
-        results.append({"frac": frac, "n_sub": n_sub, "accs": accs, "mean": mean, "ci": ci})
-        print(f"Train frac={frac:.1f} (n={n_sub:4d})  Test acc mean={mean:.4f}  95% CI=[{lo:.4f},{hi:.4f}]")
+        print(f"Train frac={frac:.6f} ({dataset_percent:.3f}%) n={n_sub:4d}  Test acc mean={acc_mean:.4f}")
+
+    # Save CSV with ONLY dataset_percent and accuracy
+    df_out = pd.DataFrame(results_rows, columns=["dataset_percent", "accuracy"])
+    df_out.to_csv(csv_out_path, index=False)
 
     # Plot
-    fracs = np.array([r["frac"] for r in results])
-    means = np.array([r["mean"] for r in results])
-    cis = np.array([r["ci"] for r in results])
+    # Plot (convert pandas Series -> numpy to avoid pandas multidim indexing error)
+    x = df_out["dataset_percent"].to_numpy(dtype=float)
+    y = df_out["accuracy"].to_numpy(dtype=float)
 
     plt.figure(figsize=(7, 5))
-    plt.errorbar(fracs * 100, means, yerr=cis, fmt="-o", capsize=5)
+    plt.plot(x, y, marker="o")
     plt.xlabel("Training data used (%) of training pool")
     plt.ylabel("Test accuracy")
-    plt.title("Learning Curve: Best SVM vs Training Set Size (fixed test set)")
+    plt.title("Learning Curve: Best Model vs Training Set Size (fixed test set)")
     plt.grid(True)
     plt.ylim(0.0, 1.02)
     plt.tight_layout()
     plt.show()
 
-    return results
+
+    print(f"\nSaved learning-curve CSV to: {csv_out_path}")
+    return df_out
 
 # -------------------------------
 # Main training pipeline
@@ -435,8 +486,19 @@ def train_full_pipeline(csv_path, test_size=0.2, random_state=42):
     best_clf = grid.best_estimator_
     best_clf.fit(X_train, y_train)
 
+    cv10_mean, cv10_ci, _ = kfold_cv_mean_ci(
+        X_train, y_train, best_clf, n_splits=10, random_state=random_state
+    )
+    plot_single_bar_mean_ci(
+        cv10_mean, cv10_ci,
+        model_name="SVM",
+        title="SVM 10-Fold CV Accuracy (Mean ± 95% CI)"
+    )
+    print(f"\nSVM 10-fold CV on TRAIN: mean={cv10_mean:.4f}, 95% CI=[{cv10_mean-cv10_ci:.4f}, {cv10_mean+cv10_ci:.4f}]")
+
+
     # Evaluate best model on test set
-    normal_test_acc = evaluate_on_test(X_test, y_test, best_clf, title_suffix="(TRUE LABELS, Held-out Test)")
+    test_metrics = evaluate_on_test(X_test, y_test, best_clf, title_suffix="Test Set")
 
     # Best-model stability + CI on TRAIN ONLY (Repeated CV)
     acc_mean, acc_ci, f1_mean, f1_ci = repeated_cv_best_model_ci(
@@ -461,16 +523,18 @@ def train_full_pipeline(csv_path, test_size=0.2, random_state=42):
     perm_clf = clone(best_clf)
     perm_clf.fit(X_train, y_train_perm)
 
-    perm_test_acc = evaluate_on_test(X_test, y_test, perm_clf, title_suffix="(TRAIN LABELS PERMUTED, Held-out Test)")
+    perm_test_metrics = evaluate_on_test(X_test, y_test, perm_clf, title_suffix="(TRAIN LABELS PERMUTED, Held-out Test)")
 
     # Comparison bar chart
     plt.figure(figsize=(6, 4))
-    plt.bar(["True labels", "Permuted train labels"], [normal_test_acc, perm_test_acc])
+    plt.bar(["True labels", "Permuted train labels"],
+            [test_metrics["accuracy"], perm_test_metrics["accuracy"]])
     plt.ylim(0.0, 1.0)
     plt.ylabel("Test Accuracy")
     plt.title("Test Accuracy: True vs Permuted-Label Training")
     plt.tight_layout()
     plt.show()
+
 
     # -------------------------
     # Learning curve (train on 10%, 20%, ..., 100% of training pool; test on fixed test set)
@@ -481,17 +545,34 @@ def train_full_pipeline(csv_path, test_size=0.2, random_state=42):
         X_test,
         y_test,
         best_clf,
-        fractions=np.arange(0.01, 1.01, 0.01),
+        n_points=100,
+        min_frac=0.01,
+        max_frac=1.0,
         repeats=10,
         random_state=random_state,
+        csv_out_path="svm_learning_curve.csv",
     )
+
+
 
 
     print("\n=== Quick Summary ===")
     print(f"Best hyperparameters (true labels): {grid.best_params_}")
-    print(f"Test accuracy (true labels): {normal_test_acc:.4f}")
+    print(f"Test accuracy (true labels): {test_metrics['accuracy']:.4f}")
+    print(f"Test precision (macro): {test_metrics['precision_macro']:.4f}")
+    print(f"Test recall (macro): {test_metrics['recall_macro']:.4f}")
+    print(f"Test f1 (macro): {test_metrics['f1_macro']:.4f}")
     print(f"Train stability (repeated CV) accuracy mean ± 95% CI: {acc_mean:.4f} ± {acc_ci:.4f}")
-    print(f"Permutation test accuracy (test): {perm_test_acc:.4f}")
+    print(f"Permutation test accuracy (test): {perm_test_metrics['accuracy']:.4f}")
+
+
+    print("\n=== FINAL HELD-OUT TEST METRICS ===")
+    print(f"Test Accuracy : {test_metrics['accuracy']:.4f}")
+    print(f"Test Precision: {test_metrics['precision_macro']:.4f}  (macro)")
+    print(f"Test Recall   : {test_metrics['recall_macro']:.4f}  (macro)")
+    print(f"Test F1       : {test_metrics['f1_macro']:.4f}  (macro)")
+
+
 
     return best_clf
 
