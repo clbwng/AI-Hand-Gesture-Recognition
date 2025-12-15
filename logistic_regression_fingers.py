@@ -259,87 +259,119 @@ plt.show()
 def min_class_count(y):
     return pd.Series(y).value_counts().min()
 
-# ===========================================================
-# STEP 5 — Dataset Size Sensitivity (Learning Curve)
-# ===========================================================
-print("\n===== DATASET SIZE SENSITIVITY ANALYSIS =====")
+import numpy as np
+import pandas as pd
 
-# Percentages of dataset to evaluate
+from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
+from sklearn.base import clone
 
-learning_curve_results = []
 
-dataset_fracs = np.linspace(0.05, 1.0, 95)
+def logistic_regression_learning_curve(
+    X,
+    y,
+    C,
+    test_size=0.2,
+    random_state=42,
+    min_percent=1,
+    max_percent=100,
+    csv_out="logistic_regression_learning_curve.csv",
+):
+    """
+    Learning curve for Logistic Regression:
+      - Fixed 20% test set
+      - Train on 1%, 2%, ..., 100% of remaining 80%
+      - Evaluate on fixed test set
+      - Output CSV with:
+          training_dataset_percentage, accuracy
+    """
 
-for frac in dataset_fracs:
-    print(f"Using {int(frac*100)}% of dataset")
+    # --------------------------------------------------
+    # Step 1: Fixed train/test split
+    # --------------------------------------------------
+    X_train_pool, X_test, y_train_pool, y_test = train_test_split(
+        X,
+        y,
+        test_size=test_size,
+        stratify=y,
+        random_state=random_state,
+    )
 
-    # ---------------------------------------
-    # Subsample fraction (handle 100%)
-    # ---------------------------------------
-    if frac < 1.0:
-        X_frac, _, y_frac, _ = train_test_split(
-            X,
-            y,
-            train_size=frac,
-            stratify=y,
-            random_state=RANDOM_SEED
+    n_train_total = len(y_train_pool)
+    rows = []
+
+    print("\n===== LOGISTIC REGRESSION LEARNING CURVE =====")
+
+    # --------------------------------------------------
+    # Step 2: Loop over training percentages
+    # --------------------------------------------------
+    for pct in range(min_percent, max_percent + 1):
+        frac = pct / 100.0
+        n_samples = max(1, int(round(frac * n_train_total)))
+
+        # Stratified subsample from TRAIN pool
+        sss = StratifiedShuffleSplit(
+            n_splits=1,
+            train_size=n_samples,
+            random_state=random_state + pct,
         )
-    else:
-        X_frac, y_frac = X.copy(), y.copy()
 
-    # ---------------------------------------
-    # CHECK: can we stratify further?
-    # ---------------------------------------
-    if min_class_count(y_frac) < 2:
-        print("  ⚠️ Skipping — not enough samples per class")
-        continue
+        for idx, _ in sss.split(X_train_pool, y_train_pool):
+            X_sub = X_train_pool[idx]
+            y_sub = y_train_pool[idx]
 
-    # ---------------------------------------
-    # 80 / 20 internal split
-    # ---------------------------------------
-    X_tr, X_te, y_tr, y_te = train_test_split(
-        X_frac,
-        y_frac,
-        test_size=0.20,
-        stratify=y_frac,
-        random_state=RANDOM_SEED
-    )
+        # --------------------------------------------------
+        # Scale using TRAIN SUBSET ONLY
+        # --------------------------------------------------
+        scaler = StandardScaler()
+        X_sub_s = scaler.fit_transform(X_sub)
+        X_test_s = scaler.transform(X_test)
 
-    # ---------------------------------------
-    # Train + evaluate
-    # ---------------------------------------
-    scaler = StandardScaler()
-    X_tr = scaler.fit_transform(X_tr)
-    X_te = scaler.transform(X_te)
+        # --------------------------------------------------
+        # Train Logistic Regression
+        # --------------------------------------------------
+        clf = LogisticRegression(
+            C=C,
+            solver="lbfgs",
+            max_iter=2000,
+        )
 
-    model = LogisticRegression(
-        C=best_C,
-        solver="lbfgs",
-        max_iter=2000
-    )
+        clf.fit(X_sub_s, y_sub)
 
-    model.fit(X_tr, y_tr)
-    y_pred = model.predict(X_te)
+        # --------------------------------------------------
+        # Evaluate on FIXED test set
+        # --------------------------------------------------
+        acc = accuracy_score(y_test, clf.predict(X_test_s))
 
-    acc = accuracy_score(y_te, y_pred)
+        rows.append({
+            "training_dataset_percentage": pct,
+            "accuracy": acc,
+        })
 
-    learning_curve_results.append({
-        "dataset_fraction": frac,
-        "dataset_percent": frac * 100,
-        "accuracy": acc,
-        "n_samples": len(X_frac)
-    })
+        print(f"Train % = {pct:3d}% | Samples = {n_samples:4d} | Test Acc = {acc:.4f}")
 
-# Convert to DataFrame
-lc_df = pd.DataFrame(learning_curve_results)
+    # --------------------------------------------------
+    # Step 3: Save CSV
+    # --------------------------------------------------
+    df = pd.DataFrame(rows)
+    df.to_csv(csv_out, index=False)
 
-# ===========================================================
-# Save results to CSV
-# ===========================================================
-CSV_OUT = "logistic_regression_learning_curve.csv"
-lc_df.to_csv(CSV_OUT, index=False)
-print(f"\nLearning curve data saved to: {CSV_OUT}")
-# ===========================================================
+    print(f"\nSaved learning curve CSV to: {csv_out}")
+    return df
+
+
+learning_curve_df = logistic_regression_learning_curve(
+    X,
+    y,
+    C=best_C,                 # from validation sweep
+    test_size=0.2,
+    random_state=42,
+    min_percent=1,
+    max_percent=99,
+    csv_out="logistic_regression_learning_curve.csv",
+)
 
 # ===========================================================
 # STEP 6 — Permuted Label Sanity Check

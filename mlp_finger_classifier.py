@@ -211,67 +211,81 @@ def min_class_count(y):
 
 
 # ===========================================================
-# STEP 5 — Dataset size sensitivity (CSV output)
+# STEP 5 — Learning Curve (Fixed 20% Test Set, MLP)
 # ===========================================================
+from sklearn.model_selection import StratifiedShuffleSplit
+
 rows = []
 
-for frac in np.linspace(0.05, 1.0, 95):
-    print(f"Using {int(frac*100)}% of dataset")
+print("\n===== MLP LEARNING CURVE (FIXED TEST SET) =====")
 
-    # ---------------------------------------
-    # Subsample fraction (handle 100%)
-    # ---------------------------------------
-    if frac < 1.0:
-        X_frac, _, y_frac, _ = train_test_split(
-            X,
-            y,
-            train_size=frac,
-            stratify=y,
-            random_state=RANDOM_SEED
-        )
-    else:
-        X_frac, y_frac = X.copy(), y.copy()
+# -----------------------------------------------------------
+# FIXED train/test split (80 / 20) — reuse earlier split
+# -----------------------------------------------------------
+X_train_pool = X_trainval        # 80% pool (train + val)
+y_train_pool = y_trainval
 
-    # ---------------------------------------
-    # CHECK: can we stratify further?
-    # ---------------------------------------
-    if min_class_count(y_frac) < 2:
-        print("  ⚠️ Skipping — not enough samples per class")
-        continue
+n_train_total = len(y_train_pool)
 
-    # ---------------------------------------
-    # 80 / 20 internal split
-    # ---------------------------------------
-    X_tr, X_te, y_tr, y_te = train_test_split(
-        X_frac,
-        y_frac,
-        test_size=0.20,
-        stratify=y_frac,
-        random_state=RANDOM_SEED
+for pct in range(1, 100):  # 1% → 100%
+    frac = pct / 100.0
+    n_samples = max(1, int(round(frac * n_train_total)))
+
+    # -------------------------------------------------------
+    # Stratified subsample from TRAIN POOL ONLY
+    # -------------------------------------------------------
+    sss = StratifiedShuffleSplit(
+        n_splits=1,
+        train_size=n_samples,
+        random_state=RANDOM_SEED + pct,
     )
 
-    scaler = StandardScaler()
-    X_tr = scaler.fit_transform(X_tr)
-    X_te = scaler.transform(X_te)
+    for idx, _ in sss.split(X_train_pool, y_train_pool):
+        X_sub = X_train_pool[idx]
+        y_sub = y_train_pool[idx]
 
+    # -------------------------------------------------------
+    # Scale (fit on training subset only)
+    # -------------------------------------------------------
+    scaler = StandardScaler()
+    X_sub_s = scaler.fit_transform(X_sub)
+    X_test_s = scaler.transform(X_test)
+
+    # -------------------------------------------------------
+    # Train MLP with frozen best hyperparameters
+    # -------------------------------------------------------
     model = MLPClassifier(
         hidden_layer_sizes=HIDDEN_SIZES[0],
         alpha=best_cfg[0],
         learning_rate_init=best_cfg[1],
+        activation="relu",
+        solver="adam",
         max_iter=400,
-        early_stopping=True,
-        random_state=RANDOM_SEED
+        early_stopping=False,
+        random_state=RANDOM_SEED,
     )
 
-    model.fit(X_tr, y_tr)
-    acc = accuracy_score(y_te, model.predict(X_te))
+    model.fit(X_sub_s, y_sub)
 
-    rows.append({"dataset_percent": frac*100, "accuracy": acc})
+    # -------------------------------------------------------
+    # Evaluate on FIXED test set
+    # -------------------------------------------------------
+    acc = accuracy_score(y_test, model.predict(X_test_s))
 
+    rows.append({
+        "training_dataset_percentage": pct,
+        "accuracy": acc,
+    })
+
+    print(f"Train % = {pct:3d}% | Samples = {n_samples:4d} | Test Acc = {acc:.4f}")
+
+# -----------------------------------------------------------
+# Save CSV (exact schema requested)
+# -----------------------------------------------------------
 curve_df = pd.DataFrame(rows)
 curve_df.to_csv(LEARNING_CURVE_CSV, index=False)
 
-print(f"\nSaved learning curve data to {LEARNING_CURVE_CSV}")
+print(f"\nSaved MLP learning curve to: {LEARNING_CURVE_CSV}")
 
 # ===========================================================
 # STEP 6 — Permuted Label Sanity Check (MLP)
