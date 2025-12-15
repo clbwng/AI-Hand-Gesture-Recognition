@@ -1,6 +1,8 @@
 # AI Hand Gesture Recognition (concise)
 
-Lightweight pipeline to extract MediaPipe hand landmarks and train classical ML models to predict finger count (0–5).
+**WHITEPAPER:** https://drive.google.com/file/d/1C1uuupBMZ_RwiGJ-QhDkHX9WDe_hndD7/view?usp=sharing
+
+Lightweight pipeline to extract MediaPipe hand landmarks from hand images and train classical ML models (logistic regression, SVM, and MLP) to predict raised finger count (0–5).  
 
 ## What’s in this repo
 - `annotate_landmarks.py` — extract 21 MediaPipe landmarks (x,y,z) per image and save CSV rows.
